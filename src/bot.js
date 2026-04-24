@@ -5,29 +5,74 @@ import {
 	MessageType,
 	Partials,
 	REST,
-	Routes
+	Routes,
+	ActionRowBuilder,
+	ButtonBuilder,
+	ButtonStyle
 } from "discord.js";
-import { Logger, LogLevel } from "meklog";
+import { Logger, LogLevel } from "./meklog.js";
+import fs from "fs";
+import path from "path";
 import dotenv from "dotenv";
 import axios from "axios";
+import OpenAI from "openai";
 import commands from "./commands/commands.js";
+import { tools } from "./powershell/tools.js";
+import { executePowerShell, readFile, writeFile, SafetyError } from "./powershell/executor.js";
 
 dotenv.config();
 
 const model = process.env.MODEL;
-const servers = process.env.OLLAMA.split(",").map(url => ({ url: new URL(url), available: true }));
-const stableDiffusionServers = process.env.STABLE_DIFFUSION.split(",").map(url => ({ url: new URL(url), available: true }));
+const stableDiffusionServers = process.env.STABLE_DIFFUSION ? process.env.STABLE_DIFFUSION.split(",").map(url => ({ url: new URL(url), available: true })) : [];
 const channels = process.env.CHANNELS.split(",");
 
-if (servers.length == 0) {
-	throw new Error("No servers available");
-}
+const openai = new OpenAI({
+    baseURL: process.env.OLLAMA ? `${process.env.OLLAMA.replace(/\/$/, "")}/v1` : (process.env.LM_STUDIO_URL || "http://localhost:1234/v1"),
+    apiKey: process.env.OPENAI_API_KEY || "ollama"
+});
 
-let log;
+let log = new Logger(false, "Bot");
 process.on("message", data => {
 	if (data.shardID) client.shardID = data.shardID;
 	if (data.logger) log = new Logger(data.logger);
 });
+
+async function startBackendAutoDetector() {
+	const endpoints = [];
+	const ollamaUrl = process.env.OLLAMA ? `${process.env.OLLAMA.replace(/\/$/, "")}/v1` : "http://localhost:11434/v1";
+	const lmStudioUrl = process.env.LM_STUDIO_URL || "http://localhost:1234/v1";
+
+	endpoints.push({ name: "Ollama", url: ollamaUrl });
+	endpoints.push({ name: "LM Studio", url: lmStudioUrl });
+
+	let currentBackendName = "Unknown";
+
+	while (true) {
+		let foundActive = false;
+		for (const endpoint of endpoints) {
+			try {
+				await axios.get(`${endpoint.url}/models`, { timeout: 2000 });
+				if (openai.baseURL !== endpoint.url) {
+					log(LogLevel.Info, `Auto-switched backend to: ${endpoint.name} (${endpoint.url})`);
+					openai.baseURL = endpoint.url;
+					currentBackendName = endpoint.name;
+				}
+				foundActive = true;
+				break;
+			} catch (e) {
+				// Ignore and try next
+			}
+		}
+		
+		if (!foundActive && currentBackendName !== "Disconnected") {
+			log(LogLevel.Warning, `Both Ollama and LM Studio seem to be offline. Please start one of them!`);
+			currentBackendName = "Disconnected";
+		}
+
+		await new Promise(r => setTimeout(r, 10000));
+	}
+}
+startBackendAutoDetector();
 
 const logError = (error) => {
 	if (error.response) {
@@ -49,48 +94,7 @@ function shuffleArray(array) {
 	return array;
 }
 
-async function makeRequest(path, method, data) {
-	while (servers.filter(server => server.available).length == 0) {
-		// wait until a server is available
-		await new Promise(res => setTimeout(res, 1000));
-	}
-
-	let error = null;
-	// randomly loop through the servers available, don't shuffle the actual array because we want to be notified of any updates
-	let order = new Array(servers.length).fill().map((_, i) => i);
-	if (randomServer) order = shuffleArray(order);
-	for (const j in order) {
-		if (!order.hasOwnProperty(j)) continue;
-		const i = order[j];
-		// try one until it succeeds
-		try {
-			// make a request to ollama
-			if (!servers[i].available) continue;
-			const url = new URL(servers[i].url); // don't modify the original URL
-
-			servers[i].available = false;
-
-			if (path.startsWith("/")) path = path.substring(1);
-			if (!url.pathname.endsWith("/")) url.pathname += "/"; // safety
-			url.pathname += path;
-			log(LogLevel.Debug, `Making request to ${url}`);
-			const result = await axios({
-				method, url, data,
-				responseType: "text"
-			});
-			servers[i].available = true;
-			return result.data;
-		} catch (err) {
-			servers[i].available = true;
-			error = err;
-			logError(error);
-		}
-	}
-	if (!error) {
-		throw new Error("No servers available");
-	}
-	throw error;
-}
+// Ollama makeRequest function removed
 
 async function makeStableDiffusionRequest(path, method, data) {
 	while (stableDiffusionServers.filter(server => server.available).length == 0) {
@@ -287,13 +291,9 @@ client.on(Events.MessageCreate, async message => {
 			return;
 		}
 
-		// fetch info about the model like the template and system message
+		// LM Studio / OpenAI doesn't support /api/show to fetch system messages from the model.
 		if (modelInfo == null) {
-			modelInfo = (await makeRequest("/api/show", "post", {
-				name: model
-			}));
-			if (typeof modelInfo === "string") modelInfo = JSON.parse(modelInfo);
-			if (typeof modelInfo !== "object") throw "failed to fetch model information";
+			modelInfo = { system: "" };
 		}
 
 		const systemMessages = [];
@@ -372,10 +372,7 @@ client.on(Events.MessageCreate, async message => {
 
 		if (message.type == MessageType.Default && (requiresMention && message.guild && !message.content.match(myMention))) return;
 
-		if (message.guild) {
-			await message.guild.channels.fetch();
-			await message.guild.members.fetch();
-		}
+		// Removed aggressive guild.channels.fetch() and guild.members.fetch() to prevent opcode 8 rate limits.
 
 		userInput = userInput
 			.replace(myMention, "")
@@ -420,7 +417,7 @@ client.on(Events.MessageCreate, async message => {
 
 		// create conversation
 		if (messages[channelID] == null) {
-			messages[channelID] = { amount: 0, last: null };
+			messages[channelID] = { history: [] };
 		}
 
 		// log user's message
@@ -441,34 +438,32 @@ client.on(Events.MessageCreate, async message => {
 			}
 		}, 7000);
 
-		let response;
 		try {
-			// context if the message is not a reply
-			if (context == null) {
-				context = messages[channelID].last;
-			}
-
-			if (useInitialPrompt && messages[channelID].amount == 0) {
+			if (useInitialPrompt && messages[channelID].history.length == 0) {
 				userInput = `${initialPrompt}\n\n${userInput}`;
 				log(LogLevel.Debug, "Adding initial prompt to message");
 			}
 
-			// make request to model
-			response = (await makeRequest("/api/generate", "post", {
-				model: model,
-				prompt: userInput,
-				system: systemMessage,
-				context
-			}));
-
-			if (typeof response != "string") {
-				log(LogLevel.Debug, response);
-				throw new TypeError("response is not a string, this may be an error with ollama");
-			}
-
-			response = response.split("\n").filter(e => !!e).map(e => {
-				return JSON.parse(e);
+			const responseText = await processAgentRequest({
+				channelID,
+				userInput,
+				systemMessage,
+				authorId: message.author.id,
+				channel: message.channel,
 			});
+
+			if (typingInterval != null) {
+				clearInterval(typingInterval);
+			}
+			typingInterval = null;
+
+			log(LogLevel.Debug, `Response: ${responseText}`);
+
+			const prefix = showStartOfConversation && messages[channelID].history.length == 2 ?
+				"> This is the beginning of the conversation, type `.help` for help.\n\n" : "";
+
+			await replySplitMessage(message, `${prefix}${responseText}`);
+
 		} catch (error) {
 			if (typingInterval != null) {
 				clearInterval(typingInterval);
@@ -476,36 +471,9 @@ client.on(Events.MessageCreate, async message => {
 			typingInterval = null;
 			throw error;
 		}
-
-		if (typingInterval != null) {
-			clearInterval(typingInterval);
-		}
-		typingInterval = null;
-
-		let responseText = response.map(e => e.response).filter(e => e != null).join("").trim();
-		if (responseText.length == 0) {
-			responseText = "(No response)";
-		}
-
-		log(LogLevel.Debug, `Response: ${responseText}`);
-
-		const prefix = showStartOfConversation && messages[channelID].amount == 0 ?
-			"> This is the beginning of the conversation, type `.help` for help.\n\n" : "";
-
-		// reply (will automatically stop typing)
-		const replyMessageIDs = (await replySplitMessage(message, `${prefix}${responseText}`)).map(msg => msg.id);
-
-		// add response to conversation
-		context = response.filter(e => e.done && e.context)[0].context;
-		for (let i = 0; i < replyMessageIDs.length; ++i) {
-			messages[channelID][replyMessageIDs[i]] = context;
-		}
-		messages[channelID].last = context;
-		++messages[channelID].amount;
 	} catch (error) {
 		if (typing) {
 			try {
-				// return error
 				await message.reply({ content: "Error, please check the console" });
 			} catch (ignored) {
 				logError(ignored);
@@ -515,12 +483,293 @@ client.on(Events.MessageCreate, async message => {
 	}
 });
 
+// ─────────────────────────────────────────────────────────────
+// Shared agent processing function
+// Used by both MessageCreate and /agent slash command
+// ─────────────────────────────────────────────────────────────
+async function processAgentRequest({ channelID, userInput, systemMessage, authorId, channel, forceAgents }) {
+	// create conversation
+	if (messages[channelID] == null) {
+		messages[channelID] = { history: [] };
+	}
+
+	const messagesForOpenAI = [];
+	let finalSystemMessage = systemMessage || "";
+
+	// Determine which agents to load
+	let potentialAgents = forceAgents ? [...forceAgents] : [];
+
+	if (!forceAgents || forceAgents.length === 0) {
+		// 1. Check for @agent tags
+		const agentMatches = userInput.match(/@([a-zA-Z0-9_-]+)/g);
+		if (agentMatches) potentialAgents.push(...agentMatches.map(a => a.substring(1)));
+
+		// 2. Check the first word in the message
+		const firstWordMatch = userInput.match(/^([a-zA-Z0-9_-]+)/);
+		if (firstWordMatch) potentialAgents.push(firstWordMatch[1]);
+
+		// 3. Check for explicit parameters like 'agent: bridge' or '--agent bridge'
+		const explicitAgentMatch = userInput.match(/(?:agent:\s*|--agent\s+)([a-zA-Z0-9_-]+)/i);
+		if (explicitAgentMatch) potentialAgents.push(explicitAgentMatch[1]);
+	}
+
+	const uniqueAgents = [...new Set(potentialAgents)];
+	let agentLoaded = false;
+
+	if (uniqueAgents.length > 0) {
+		const agentsDir = path.join(process.cwd(), "src", "agents");
+		const skillsDir = path.join(process.cwd(), "src", "skills");
+
+		for (const agentName of uniqueAgents) {
+			const agentPath = path.join(agentsDir, `${agentName}.agent.md`);
+			if (fs.existsSync(agentPath)) {
+				agentLoaded = true;
+				log(LogLevel.Debug, `Loading agent context: ${agentName}`);
+				const agentContent = fs.readFileSync(agentPath, "utf-8");
+				finalSystemMessage += `\n\n--- AGENT CONTEXT: ${agentName} ---\n${agentContent}`;
+
+				// Find mentioned skills formatted as `skill-name`
+				const skillMatches = agentContent.match(/`([a-zA-Z0-9_-]+)`/g);
+				if (skillMatches) {
+					const uniqueSkills = [...new Set(skillMatches.map(s => s.replace(/`/g, "")))];
+					for (const skillName of uniqueSkills) {
+						const skillPath = path.join(skillsDir, skillName, "SKILL.md");
+						if (fs.existsSync(skillPath)) {
+							log(LogLevel.Debug, `Loading skill context: ${skillName}`);
+							const skillContent = fs.readFileSync(skillPath, "utf-8");
+							finalSystemMessage += `\n\n--- SKILL CONTEXT: ${skillName} ---\n${skillContent}`;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Inject mandatory tool-use instruction when an agent is loaded
+	if (agentLoaded) {
+		finalSystemMessage += `\n\n--- CRITICAL INTERACTION RULES ---
+When you need ANY information from the user — missing details, architectural decisions, clarifications, or choices between options — you MUST call the "ask_user_clarification" tool. NEVER ask questions as plain text in your response.
+Call the tool with:
+- "question": your question text
+- "options": an array of 2-5 short clickable choices the user can pick from
+The user will click a button in Discord to respond. Only after receiving their selection should you proceed.
+If you have multiple missing details, ask about the MOST CRITICAL one first using a single tool call.`;
+	}
+
+	if (finalSystemMessage) {
+		messagesForOpenAI.push({ role: "system", content: finalSystemMessage });
+	}
+
+	messagesForOpenAI.push(...messages[channelID].history);
+	messagesForOpenAI.push({ role: "user", content: userInput });
+	messages[channelID].history.push({ role: "user", content: userInput });
+
+	let responseText = "";
+	let keepRunning = true;
+	while (keepRunning) {
+		const completion = await openai.chat.completions.create({
+			model: model || "lm-studio",
+			messages: messagesForOpenAI,
+			tools: tools,
+			tool_choice: "auto",
+		});
+
+		const responseMessage = completion.choices[0].message;
+		messagesForOpenAI.push(responseMessage);
+		messages[channelID].history.push(responseMessage);
+
+		if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+			for (const toolCall of responseMessage.tool_calls) {
+				let toolResult = "";
+				let args;
+				try {
+					args = JSON.parse(toolCall.function.arguments);
+				} catch (e) {
+					args = {};
+				}
+				log(LogLevel.Debug, `Tool Call: ${toolCall.function.name}`);
+
+				try {
+					if (toolCall.function.name === "execute_powershell") {
+						toolResult = await executePowerShell(args.command);
+					} else if (toolCall.function.name === "read_file") {
+						toolResult = await readFile(args.filename);
+					} else if (toolCall.function.name === "write_file") {
+						toolResult = await writeFile(args.filename, args.content);
+					} else if (toolCall.function.name === "ask_user_clarification") {
+						const options = args.options || ["Yes", "No"];
+						const question = args.question || "Please choose an option:";
+
+						const row = new ActionRowBuilder();
+						options.slice(0, 5).forEach((opt, index) => {
+							row.addComponents(
+								new ButtonBuilder()
+									.setCustomId(`clarify_${index}`)
+									.setLabel(opt.length > 80 ? opt.substring(0, 77) + "..." : opt)
+									.setStyle(ButtonStyle.Primary)
+							);
+						});
+
+						const clarMsg = await channel.send({
+							content: `🤔 **Clarification needed:**\n${question}`,
+							components: [row]
+						});
+
+						try {
+							const interaction = await clarMsg.awaitMessageComponent({
+								filter: i => i.user.id === authorId,
+								time: 60000 * 5
+							});
+
+							const selectedIndex = parseInt(interaction.customId.split('_')[1], 10);
+							const selectedOption = options[selectedIndex];
+
+							await interaction.update({
+								content: `🤔 **Clarification needed:**\n${question}\n\n✅ *You selected:* **${selectedOption}**`,
+								components: []
+							});
+							toolResult = `User selected: "${selectedOption}"`;
+						} catch (e) {
+							await clarMsg.edit({
+								content: `🤔 **Clarification needed:**\n${question}\n\n⏰ *(Timed out — no response)*`,
+								components: []
+							});
+							toolResult = "User did not respond within 5 minutes. Proceed with your best judgment.";
+						}
+					} else {
+						toolResult = "Unknown tool.";
+					}
+				} catch (e) {
+					if (e instanceof SafetyError) {
+						const commandId = Math.random().toString(36).substring(7);
+						global.pendingCommands = global.pendingCommands || new Map();
+						global.pendingCommands.set(commandId, { command: args.command, channelID });
+
+						const safeRow = new ActionRowBuilder()
+							.addComponents(
+								new ButtonBuilder()
+									.setCustomId(`approve_${commandId}`)
+									.setLabel('Approve')
+									.setStyle(ButtonStyle.Success),
+								new ButtonBuilder()
+									.setCustomId(`deny_${commandId}`)
+									.setLabel('Deny')
+									.setStyle(ButtonStyle.Danger),
+							);
+
+						await channel.send({
+							content: `⚠️ **[SAFE MODE]** Command blocked: \`${args.command}\`\nPlease approve or deny.`,
+							components: [safeRow]
+						});
+
+						toolResult = `ERROR: SafetyError: ${e.message}. The user has been asked for confirmation. Do not proceed until approved.`;
+					} else {
+						toolResult = `ERROR: ${e.message}`;
+					}
+				}
+
+				const toolMessage = {
+					role: "tool",
+					tool_call_id: toolCall.id,
+					content: toolResult
+				};
+				messagesForOpenAI.push(toolMessage);
+				messages[channelID].history.push(toolMessage);
+			}
+		} else {
+			responseText = responseMessage.content;
+			keepRunning = false;
+		}
+	}
+
+	if (!responseText || responseText.length == 0) {
+		responseText = "(No response)";
+	}
+
+	return responseText;
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
+	if (interaction.isButton()) {
+		const [action, commandId] = interaction.customId.split("_");
+		if (action === "approve" || action === "deny") {
+			const pending = global.pendingCommands?.get(commandId);
+			if (!pending) {
+				return interaction.reply({ content: "Command expired or not found.", ephemeral: true });
+			}
+			
+			if (action === "approve") {
+				await interaction.reply({ content: `Executing command...` });
+				try {
+					const result = await executePowerShell(pending.command, true);
+					if (messages[pending.channelID]) {
+						messages[pending.channelID].history.push({ role: "system", content: `Command approved and executed. Output:\n${result}` });
+					}
+					await replySplitMessage(interaction.message, `Command Output:\n\`\`\`\n${result}\n\`\`\``);
+				} catch (err) {
+					await interaction.channel.send(`Error executing command: ${err.message}`);
+				}
+			} else {
+				await interaction.reply({ content: "Command denied." });
+				if (messages[pending.channelID]) {
+					messages[pending.channelID].history.push({ role: "system", content: `Command was denied by the user.` });
+				}
+			}
+			global.pendingCommands.delete(commandId);
+			return;
+		}
+	}
+
 	if (!interaction.isCommand()) return;
 
 	const { commandName, options } = interaction;
 
 	switch (commandName) {
+		case "agent":
+			try {
+				const agentName = options.getString("name");
+				const prompt = options.getString("prompt");
+				const channelID = interaction.channelId;
+
+				await interaction.deferReply();
+
+				// Build system message
+				const systemMessages = [];
+				if (useModelSystemMessage && modelInfo?.system) systemMessages.push(modelInfo.system);
+				if (useCustomSystemMessage) systemMessages.push(customSystemMessage);
+				const systemMessage = systemMessages.join("\n\n");
+
+				// Create conversation if needed
+				if (messages[channelID] == null) {
+					messages[channelID] = { history: [] };
+				}
+
+				log(LogLevel.Debug, `[/agent] ${interaction.user.username} -> @${agentName}: ${prompt}`);
+
+				const responseText = await processAgentRequest({
+					channelID,
+					userInput: prompt,
+					systemMessage,
+					authorId: interaction.user.id,
+					channel: interaction.channel,
+					forceAgents: [agentName],
+				});
+
+				// Split response if needed (editReply for first, channel.send for rest)
+				const responseMessages = splitText(responseText, 2000);
+				await interaction.editReply({ content: responseMessages[0] });
+				for (let i = 1; i < responseMessages.length; i++) {
+					await interaction.channel.send({ content: responseMessages[i] });
+				}
+			} catch (error) {
+				logError(error);
+				try {
+					await interaction.editReply({ content: "Error processing agent request, please check the console." });
+				} catch (ignored) {
+					logError(ignored);
+				}
+			}
+			break;
 		case "text2img":
 			try {
 				const prompt = options.getString("prompt");

@@ -1,49 +1,74 @@
 <div align="center">
-    <h1>Discord AI Bot</h1>
-    <h2>Repository is now in maintanance mode - rewriting project to Typescript on <a href="https://github.com/238SAMIxD/discord-ai-bot/tree/typescript">typescript</a> branch</h2>
-    <h3 align="center">Discord bot to interact with <a href="https://github.com/jmorganca/ollama">Ollama</a> and <a href="https://github.com/AUTOMATIC1111/stable-diffusion-webui">AUTOMATIC1111 Stable Diffusion</a> as a chatbot</h3>
-    <h3><img alt="Stars" src="https://img.shields.io/github/stars/mekb-turtle/discord-ai-bot?display_name=tag&style=for-the-badge" /></h3>
-    <h3><img alt="Discord chat with the bot" src="assets/screenshot.png" /></h3>
+    <h1>Discord AI Local-Agent Bridge</h1>
+    <h3 align="center">Connect Discord to your local LM Studio instance with full Agentic PowerShell execution capabilities!</h3>
 </div>
 
-The project started thanks to [mekb](https://github.com/mekb-turtle).
+This project transforms a standard Discord bot into a powerful local agent. Powered by **LM Studio** and **PowerShell 7**, you can upload scripts, ask the bot to analyze or run code, and seamlessly interact with your local machine securely via Discord.
 
-### Set-up instructions
+## 🚀 Key Features
 
-1. Install [Node.js](https://nodejs.org) (if you have a package manager, use that instead to install this)
-   - Make sure to install at least v14 of Node.js
-2. Install [Ollama](https://github.com/jmorganca/ollama) (ditto)
-3. Pull (download) a model, e.g `ollama pull orca` or `ollama pull llama2`
-4. Start Ollama by running `ollama serve`
-5. [Create a Discord bot](https://discord.com/developers/applications)
-   - Under Application » Bot
-     - Enable Message Content Intent
-     - Enable Server Members Intent (for replacing user mentions with the username)
-6. Invite the bot to a server
-   1. Go to Application » OAuth2 » URL Generator
-   2. Enable `bot`
-   3. Enable Send Messages, Read Messages/View Channels, and Read Message History
-   4. Under Generated URL, click Copy and paste the URL in your browser
-7. Rename `.env.example` to `.env` and edit the `.env` file
-   - You can get the token from Application » Bot » Token, **never share this with anyone**
-   - Make sure to change the model if you aren't using `orca`
-   - Ollama URL can be kept the same unless you have changed the port
-   - You can use multiple Ollama servers at the same time by separating the URLs with commas
-   - Set the channels to the channel ID, comma separated
-     1. In Discord, go to User Settings » Advanced, and enable Developer Mode
-     2. Right click on a channel you want to use, and click Copy Channel ID
-   - You can edit the system message the bot uses, or disable it entirely
-8. Install the required dependencies with `npm i`
-9. Start the bot with `npm start`
-10. You can interact with the bot by @mentioning it with your message
-11. Install <a href="https://github.com/AUTOMATIC1111/stable-diffusion-webui">Stable Diffusion</a>
-12. Run the script `./webui.sh --api --listen`
+- **LM Studio Integration:** Uses the OpenAI Node.js SDK to connect to your local LM Studio Server (e.g., Qwen2.5 Coder, Llama 3).
+- **PowerShell Agent:** The bot has "Tool Calling" capabilities. It can spawn a `pwsh` child process, read/write files in a restricted project directory, and execute commands.
+- **Safe Mode:** Potentially destructive commands (like `Remove-Item` or `Stop-Process`) are intercepted. The bot will send an interactive message with **Approve** / **Deny** buttons in Discord before executing.
+- **Multi-File Analysis:** Upload `.ps1` or text files directly to the Discord chat. The bot will read them, analyze the code, and suggest updates.
 
-### Set-up instructions with Docker
+---
 
-1. Install [Docker](https://docs.docker.com/get-docker/)
-   - Should be atleast compatible with version 3 of compose (docker engine 1.13.0+)
-2. Repeat steps 2—7 from the other setup instructions
-3. Start the bot with `make compose-up` if you have Make installed
-   - Otherwise, try `docker compose -p discord-ai up` instead
-4. You can interact with the bot by @mentioning it with your message
+## 🛠️ Quickstart Guide
+
+### 1. Prerequisites
+- [Node.js](https://nodejs.org) (v18+ recommended)
+- [PowerShell 7 (`pwsh`)](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows) installed and added to PATH.
+- [LM Studio](https://lmstudio.ai/) installed.
+
+### 2. Configure LM Studio
+1. Open **LM Studio**.
+2. Download a coding-capable model (e.g., `Qwen2.5 Coder`).
+3. Navigate to the **Local Server** tab.
+4. Start the server (ensure it runs on `http://localhost:1234/v1`).
+
+### 3. Setup Discord Bot
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Create a New Application -> Go to the **Bot** tab.
+3. **Important:** Enable **Message Content Intent** and **Server Members Intent**.
+4. Invite the bot to your server via **OAuth2 -> URL Generator** (Select `bot` scope and Admin permissions).
+
+### 4. Project Configuration
+1. Clone this repository and navigate to the directory:
+   ```bash
+   git clone https://github.com/238SAMIxD/discord-ai-bot.git
+   cd discord-ai-bot
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+4. Edit the `.env` file:
+   - `TOKEN`: Your Discord Bot Token.
+   - `CHANNELS`: The Channel ID(s) where you want the bot to listen (comma-separated).
+   - `PROJECT_DIR`: The absolute path to the local directory you want the bot to interact with (e.g., `C:\Users\YourName\Documents\AgentWorkspace`). **The bot cannot access files outside this directory.**
+   - *Optional:* Adjust `LM_STUDIO_URL` if you run it on a different port.
+
+### 5. Start the Agent
+Run the following command to start the bridge:
+```bash
+npm start
+```
+
+---
+
+## 🤖 How to Use
+
+- **Chatting:** Just mention the bot (`@BotName hello!`) or reply to its messages.
+- **Running Code:** Ask the bot to execute a command:
+  > *"Hey @BotName, run a powershell command to list all items in the current directory."*
+- **Analyzing Scripts:** Drag and drop a `.ps1` file into the Discord chat.
+  > *"Analyze this script and fix the logic error on line 42."*
+- **Safe Mode Approvals:** If the bot tries to delete a file or run an intrusive command, it will pause and show an **Approve / Deny** button inside Discord. Click Approve to authorize the action!
+
+---
+*Based on the original [discord-ai-bot](https://github.com/238SAMIxD/discord-ai-bot).*
