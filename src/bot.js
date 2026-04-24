@@ -566,19 +566,33 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 
 	let responseText = "";
 	let keepRunning = true;
+	let loopIteration = 0;
 	while (keepRunning) {
-		const completion = await openai.chat.completions.create({
-			model: model || "lm-studio",
-			messages: messagesForOpenAI,
-			tools: tools,
-			tool_choice: "auto",
-		});
+		loopIteration++;
+		log(LogLevel.Debug, `[Agent Loop #${loopIteration}] Sending ${messagesForOpenAI.length} messages to LLM (model=${model})...`);
+		const llmStartTime = Date.now();
+		let completion;
+		try {
+			completion = await openai.chat.completions.create({
+				model: model || "lm-studio",
+				messages: messagesForOpenAI,
+				tools: tools,
+				tool_choice: "auto",
+			});
+		} catch (llmError) {
+			log(LogLevel.Error, `[Agent Loop #${loopIteration}] LLM API call FAILED after ${((Date.now() - llmStartTime) / 1000).toFixed(1)}s: ${llmError.message || llmError}`);
+			throw llmError;
+		}
+		const llmElapsed = ((Date.now() - llmStartTime) / 1000).toFixed(1);
+		const finishReason = completion.choices?.[0]?.finish_reason || "unknown";
+		log(LogLevel.Debug, `[Agent Loop #${loopIteration}] LLM responded in ${llmElapsed}s — finish_reason=${finishReason}`);
 
 		const responseMessage = completion.choices[0].message;
 		messagesForOpenAI.push(responseMessage);
 		messages[channelID].history.push(responseMessage);
 
 		if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+			log(LogLevel.Debug, `[Agent Loop #${loopIteration}] ${responseMessage.tool_calls.length} tool call(s): ${responseMessage.tool_calls.map(t => t.function.name).join(", ")}`);
 			for (const toolCall of responseMessage.tool_calls) {
 				let toolResult = "";
 				let args;
@@ -587,7 +601,7 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 				} catch (e) {
 					args = {};
 				}
-				log(LogLevel.Debug, `Tool Call: ${toolCall.function.name}`);
+				log(LogLevel.Debug, `[Tool] Executing: ${toolCall.function.name}`);
 
 				try {
 					if (toolCall.function.name === "execute_powershell") {
@@ -615,25 +629,42 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 							components: [row]
 						});
 
+						log(LogLevel.Debug, `[Clarification] Waiting for user button click...`);
 						try {
-							const interaction = await clarMsg.awaitMessageComponent({
+							const btnInteraction = await clarMsg.awaitMessageComponent({
 								filter: i => i.user.id === authorId,
 								time: 60000 * 5
 							});
 
-							const selectedIndex = parseInt(interaction.customId.split('_')[1], 10);
+							const selectedIndex = parseInt(btnInteraction.customId.split('_')[1], 10);
 							const selectedOption = options[selectedIndex];
+							log(LogLevel.Debug, `[Clarification] User clicked button #${selectedIndex}: "${selectedOption}"`);
 
-							await interaction.update({
-								content: `🤔 **Clarification needed:**\n${question}\n\n✅ *You selected:* **${selectedOption}**`,
-								components: []
-							});
+							try {
+								await btnInteraction.update({
+									content: `🤔 **Clarification needed:**\n${question}\n\n✅ *You selected:* **${selectedOption}**`,
+									components: []
+								});
+							} catch (updateErr) {
+								log(LogLevel.Error, `[Clarification] interaction.update() failed: ${updateErr.message}`);
+								try { await clarMsg.edit({ content: `🤔 ${question}\n\n✅ *You selected:* **${selectedOption}**`, components: [] }); } catch (_) {}
+							}
+
+							// Send visible progress indicator
+							try {
+								const thinkingMsg = await channel.send("⏳ *Processing your response...*");
+								setTimeout(() => { try { thinkingMsg.delete(); } catch (_) {} }, 60000);
+							} catch (_) {}
+
 							toolResult = `User selected: "${selectedOption}"`;
 						} catch (e) {
-							await clarMsg.edit({
-								content: `🤔 **Clarification needed:**\n${question}\n\n⏰ *(Timed out — no response)*`,
-								components: []
-							});
+							log(LogLevel.Debug, `[Clarification] awaitMessageComponent error: ${e.message || 'timeout'}`);
+							try {
+								await clarMsg.edit({
+									content: `🤔 **Clarification needed:**\n${question}\n\n⏰ *(Timed out — no response)*`,
+									components: []
+								});
+							} catch (_) {}
 							toolResult = "User did not respond within 5 minutes. Proceed with your best judgment.";
 						}
 					} else {
@@ -668,6 +699,7 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 					}
 				}
 
+				log(LogLevel.Debug, `[Agent Loop] Tool "${toolCall.function.name}" result: ${toolResult.substring(0, 200)}${toolResult.length > 200 ? '...' : ''}`);
 				const toolMessage = {
 					role: "tool",
 					tool_call_id: toolCall.id,
@@ -676,8 +708,10 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 				messagesForOpenAI.push(toolMessage);
 				messages[channelID].history.push(toolMessage);
 			}
+			log(LogLevel.Debug, `[Agent Loop #${loopIteration}] All tool calls processed. Looping back to LLM...`);
 		} else {
 			responseText = responseMessage.content;
+			log(LogLevel.Debug, `[Agent Loop #${loopIteration}] Final text response received (${responseText?.length || 0} chars). Done.`);
 			keepRunning = false;
 		}
 	}

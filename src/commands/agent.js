@@ -12,7 +12,8 @@ const agent = new SlashCommandBuilder()
 				{ name: "🌉 Bridge (Orchestrator)", value: "bridge" },
 				{ name: "💻 PS-Dev (PowerShell Developer)", value: "ps-dev" },
 				{ name: "🏗️ Architect (System Design)", value: "architect" },
-				{ name: "🔍 Analyst (Data & API Analysis)", value: "analyst" }
+				{ name: "🔍 Analyst (Data & API Analysis)", value: "analyst" },
+				{ name: "📝 Tutorial Writer (Technical Docs)", value: "tutorial-writer" }
 			)
 	)
 	.addStringOption((option) =>
