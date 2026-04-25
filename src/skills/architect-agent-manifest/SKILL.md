@@ -45,6 +45,7 @@ tools: [execute_powershell, read_file, write_file, ask_user_clarification]
 - **Match tools to purpose.** If the agent is conversational-only, it may not need `execute_powershell`. Only list tools the agent will actually use.
 - **Keep it lean.** The entire agent file is injected into the LLM context. Long agents burn tokens on every invocation.
 - **Skill names in backticks.** The bot's skill loader scans for backtick-wrapped names. A skill is only loaded if its name is in backticks AND the folder `src/skills/<name>/SKILL.md` exists.
+- **Directory scope.** New agents will run in the user's workspace directory (PROJECT_DIR), not the bot repo. Don't hardcode repo-specific paths in agent instructions — use relative paths that make sense for the agent's working directory.
 
 # After Creating the Agent
 The agent must also be added to `src/commands/agent.js` in the `addChoices()` array:

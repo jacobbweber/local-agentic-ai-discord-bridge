@@ -65,6 +65,25 @@ MODEL=gemma4:26b
 
 > **Tip:** To "disable" one backend, just comment it out with `#`.
 
+### Working Directories
+
+The bot uses two separate directories for file and PowerShell operations:
+
+```env
+# The bot's own source code — used by the agent-factory agent to create/edit agents and skills
+REPO_DIR=D:\Tech\git\local_projects\AI-Discord-Bridge
+
+# The default workspace — used by all other agents for PowerShell execution and file operations
+PROJECT_DIR=E:\temp
+```
+
+| Variable | Used By | Purpose |
+|---|---|---|
+| `REPO_DIR` | `agent-factory` agent only | Read/write agent manifests, skill files, and command registrations in the bot's own codebase |
+| `PROJECT_DIR` | All other agents | Sandboxed workspace for PowerShell commands, file I/O, and general agentic work |
+
+> **Security note:** `PROJECT_DIR` is isolated — agents cannot access files outside of it (path traversal is blocked). `REPO_DIR` is only unlocked when the `agent-factory` agent is explicitly invoked.
+
 ### Model Name
 
 The `MODEL` variable must match the model name in your backend:

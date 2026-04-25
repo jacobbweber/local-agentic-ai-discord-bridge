@@ -515,6 +515,7 @@ async function processAgentRequest({ channelID, userInput, systemMessage, author
 
 	const uniqueAgents = [...new Set(potentialAgents)];
 	let agentLoaded = false;
+	let useRepoDir = false;
 
 	if (uniqueAgents.length > 0) {
 		const agentsDir = path.join(process.cwd(), "src", "agents");
@@ -524,6 +525,7 @@ async function processAgentRequest({ channelID, userInput, systemMessage, author
 			const agentPath = path.join(agentsDir, `${agentName}.agent.md`);
 			if (fs.existsSync(agentPath)) {
 				agentLoaded = true;
+				if (agentName === "agent-factory") useRepoDir = true;
 				log(LogLevel.Debug, `Loading agent context: ${agentName}`);
 				const agentContent = fs.readFileSync(agentPath, "utf-8");
 				finalSystemMessage += `\n\n--- AGENT CONTEXT: ${agentName} ---\n${agentContent}`;
@@ -547,6 +549,12 @@ async function processAgentRequest({ channelID, userInput, systemMessage, author
 
 	// Inject mandatory tool-use instruction when an agent is loaded
 	if (agentLoaded) {
+		// Inject working directory context so the agent knows where its tools operate
+		const workingDir = useRepoDir ? (process.env.REPO_DIR || process.cwd()) : (process.env.PROJECT_DIR || process.cwd());
+		finalSystemMessage += `\n\n--- WORKING DIRECTORY ---
+Your tools (execute_powershell, read_file, write_file) operate in: ${workingDir}
+All file paths you use are relative to this directory.`;
+
 		finalSystemMessage += `\n\n--- CRITICAL INTERACTION RULES ---
 When you need ANY information from the user — missing details, architectural decisions, clarifications, or choices between options — you MUST call the "ask_user_clarification" tool. NEVER ask questions as plain text in your response.
 Call the tool with:
@@ -605,11 +613,11 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 
 				try {
 					if (toolCall.function.name === "execute_powershell") {
-						toolResult = await executePowerShell(args.command);
+						toolResult = await executePowerShell(args.command, false, useRepoDir);
 					} else if (toolCall.function.name === "read_file") {
-						toolResult = await readFile(args.filename);
+						toolResult = await readFile(args.filename, useRepoDir);
 					} else if (toolCall.function.name === "write_file") {
-						toolResult = await writeFile(args.filename, args.content);
+						toolResult = await writeFile(args.filename, args.content, useRepoDir);
 					} else if (toolCall.function.name === "ask_user_clarification") {
 						const options = args.options || ["Yes", "No"];
 						const question = args.question || "Please choose an option:";
@@ -674,7 +682,7 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 					if (e instanceof SafetyError) {
 						const commandId = Math.random().toString(36).substring(7);
 						global.pendingCommands = global.pendingCommands || new Map();
-						global.pendingCommands.set(commandId, { command: args.command, channelID });
+						global.pendingCommands.set(commandId, { command: args.command, channelID, useRepoDir });
 
 						const safeRow = new ActionRowBuilder()
 							.addComponents(
@@ -735,7 +743,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			if (action === "approve") {
 				await interaction.reply({ content: `Executing command...` });
 				try {
-					const result = await executePowerShell(pending.command, true);
+					const result = await executePowerShell(pending.command, true, pending.useRepoDir || false);
 					if (messages[pending.channelID]) {
 						messages[pending.channelID].history.push({ role: "system", content: `Command approved and executed. Output:\n${result}` });
 					}
