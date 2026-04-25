@@ -14,7 +14,8 @@ const agent = new SlashCommandBuilder()
 				{ name: "🏗️ Architect (System Design)", value: "architect" },
 				{ name: "🔍 Analyst (Data & API Analysis)", value: "analyst" },
 				{ name: "📝 Tutorial Writer (Technical Docs)", value: "tutorial-writer" },
-				{ name: "🏭 Agent Factory (Meta-Agent Builder)", value: "agent-factory" }
+				{ name: "🏭 Agent Factory (Meta-Agent Builder)", value: "agent-factory" },
+				{ name: "📋 Personal Assistant (Tasks & Projects)", value: "personal-assistant" }
 			)
 	)
 	.addStringOption((option) =>

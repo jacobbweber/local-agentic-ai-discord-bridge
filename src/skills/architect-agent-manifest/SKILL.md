@@ -1,30 +1,44 @@
 ---
 name: architect-agent-manifest
-description: Structural template and rules for creating valid .agent.md files in this bot.
+description: Structural template and rules for creating valid .agent.md files that align with VS Code standard.
+user-invocable: false
 ---
 
 # Purpose
-This skill defines the exact format for agent manifests. Every agent created by the factory must follow this template to be loadable by the bot.
+This skill defines the exact format for agent manifests. Every custom agent created by the factory must follow this template to be standard-compliant and portable.
 
 # File Location
-`src/agents/<name>.agent.md` — The filename stem IS the agent's invocation name.
+Workspace custom agents should be created at `src/agents/<name>.agent.md` for this bot.
 
 # Required Structure
 
 ## 1. YAML Frontmatter
+Every custom agent must start with YAML frontmatter.
+
 ```yaml
 ---
 name: <agent-name>
-description: <One clear sentence describing what this agent does>
+description: <Clear description of the agent's purpose and capabilities>
+target: vscode
+user-invocable: true
+disable-model-invocation: false
+tools: ['execute', 'read', 'edit', 'search', 'agent', 'ask_user_clarification']
+model: ['Claude 3.5 Sonnet', 'GPT-4o']
 agents: ["subagent1", "subagent2"]
-tools: [execute_powershell, read_file, write_file, ask_user_clarification]
+handoffs:
+  - label: Review Code
+    agent: code-reviewer
+    prompt: Please review the implementation just completed.
 ---
 ```
-- `name` must match the filename stem exactly.
-- `tools` must only contain tools from `src/powershell/tools.js`: `execute_powershell`, `read_file`, `write_file`, `ask_user_clarification`.
-- `agents` lists only agents with real `.agent.md` files. Omit or use `[]` if none.
+- `name` (optional but recommended): Display name for the custom agent.
+- `description` (required): What this agent does.
+- `target`: Usually `vscode` or omitted.
+- `tools`: A list of allowed tool aliases. Common ones: `execute` (shell/powershell), `read` (view files), `edit` (modify files), `search` (grep/glob), `agent` (invoke subagents), `web` (fetch URLs). (Note: Include `ask_user_clarification` for this bot's interactive prompts).
+- `agents`: List of subagent names allowed to be invoked.
+- `handoffs`: Optional suggested next actions to transition between agents.
 
-## 2. Sections
+## 2. Body / Instructions
 ```markdown
 # Role
 [2-3 sentences: who this agent is and what its mission is]
@@ -33,22 +47,18 @@ tools: [execute_powershell, read_file, write_file, ask_user_clarification]
 * **Rule Name:** [Specific behavioral instruction]
 * [3-6 rules total — be concrete, not vague]
 
-# Skills
-* `skill-name` ([When to use this skill])
-
 # Subagents (if applicable)
 * **@name:** [When and why to invoke]
 ```
 
 # Rules
-- **Be specific.** "Help the user" is too vague. "Walk the user through a multi-step form using `ask_user_clarification` to collect inputs, then generate a report with `write_file`" is actionable.
-- **Match tools to purpose.** If the agent is conversational-only, it may not need `execute_powershell`. Only list tools the agent will actually use.
+- **Tools referencing:** To reference an allowed tool in the text body, use the `#tool:<tool-name>` syntax (e.g., `#tool:read`).
+- **Match tools to purpose.** If the agent is conversational-only, it may not need `execute`. Only list tools the agent will actually use.
 - **Keep it lean.** The entire agent file is injected into the LLM context. Long agents burn tokens on every invocation.
-- **Skill names in backticks.** The bot's skill loader scans for backtick-wrapped names. A skill is only loaded if its name is in backticks AND the folder `src/skills/<name>/SKILL.md` exists.
-- **Directory scope.** New agents will run in the user's workspace directory (PROJECT_DIR), not the bot repo. Don't hardcode repo-specific paths in agent instructions — use relative paths that make sense for the agent's working directory.
+- **Directory scope.** New agents will run in the user's workspace directory, not the bot repo. Use relative paths for their instructions.
 
 # After Creating the Agent
-The agent must also be added to `src/commands/agent.js` in the `addChoices()` array:
+The agent must also be added to `src/commands/agent.js` in the `addChoices()` array for Discord integration:
 ```javascript
 { name: "🎯 Display Name (Short Description)", value: "agent-name" }
 ```

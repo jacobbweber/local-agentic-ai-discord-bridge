@@ -1,60 +1,62 @@
 ---
 name: forge-skills
-description: Process for creating new skill directories and SKILL.md files in this bot.
+description: Process for creating new skill directories and SKILL.md files that align with the VS Code Agent Skills standard.
+user-invocable: false
 ---
 
 # Purpose
-Skills are reusable knowledge modules that get injected into an agent's context when referenced. This skill defines how to create them properly.
+Agent Skills are folders of instructions, scripts, and resources that an agent can load when relevant. This skill defines how to properly create skills using the open `agentskills.io` standard.
 
-# How Skills Work in This Bot
-1. Skills live at `src/skills/<skill-name>/SKILL.md` (singular, uppercase).
-2. When an agent is loaded, the bot scans its `.agent.md` for backtick-wrapped names.
-3. For each match, it checks if `src/skills/<that-name>/SKILL.md` exists.
-4. If it does, the full content is appended to the LLM system prompt.
+# How Skills Work
+1. Skills are stored in directories with a `SKILL.md` file. In this bot, we store them at `src/skills/<skill-name>/SKILL.md`.
+2. A skill is loaded progressively when an agent references it or determines its description matches the user's intent.
 
 # How to Create a Skill
 
 ## Step 1 — Create the Directory
+Use your tools to create a directory matching the skill name:
 ```
-execute_powershell: New-Item -ItemType Directory -Path "src/skills/<skill-name>" -Force
+src/skills/<skill-name>
 ```
 
 ## Step 2 — Write SKILL.md
-```
-write_file: src/skills/<skill-name>/SKILL.md
-```
+Create the file at `src/skills/<skill-name>/SKILL.md`.
 
 Content template:
 ```markdown
 ---
 name: <skill-name>
-description: <What this skill provides to the agent>
+description: Detailed description of what this skill does AND when to use it. Copilot uses this to auto-load the skill.
+user-invocable: true
+disable-model-invocation: false
 ---
 
-# Instructions
+# <Skill Title>
+Detailed instructions, guidelines, and examples go here.
+
+## When to use this skill
+- Detail the exact scenarios this applies to.
+
+## Instructions
 1. [Step one]
 2. [Step two]
 3. [Step three]
 
-# Output
-[What the agent should produce when using this skill]
+## References
+You can reference other files placed in this skill directory using relative paths: `[template script](./template.ps1)`.
 ```
 
-## Step 3 — Reference in Agent
-Add to the agent's `# Skills` section:
-```markdown
-* `<skill-name>` ([Brief description])
-```
+## Step 3 — Add Resources (Optional)
+If the skill requires templates, scripts, or examples, write them as separate files in the same `src/skills/<skill-name>/` directory and link to them in `SKILL.md`.
 
 ## Step 4 — Verify
 Use `read_file` to confirm:
-- File exists at the correct path
-- YAML frontmatter has `name` and `description`
-- The agent file references it in backticks
+- File exists at the correct path.
+- YAML frontmatter has a valid `name` (lowercase, hyphens, matches parent dir) and `description`.
+- No special namespace prefixes in `name`.
 
 # Guidelines
-- **Keep it under 50 lines.** Every line is injected into the context window.
+- **Description is critical:** The description must explicitly state *when* to use the skill, as it controls auto-loading logic.
 - **Use steps, not prose.** Numbered instructions are followed more reliably.
 - **One skill, one purpose.** If a skill is doing two things, split it into two skills.
 - **No hardcoded secrets.** Never put API keys, tokens, or passwords in skill files.
-- **Name it well.** Lowercase, hyphenated, descriptive: `code-reviewer`, `meeting-notes`, `budget-tracker`.

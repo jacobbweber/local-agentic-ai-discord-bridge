@@ -2,9 +2,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const PROJECT_DIR = process.env.PROJECT_DIR || process.cwd();
-const REPO_DIR = process.env.REPO_DIR || process.cwd();
-
 // A simple check for potentially destructive or network-calling cmdlets
 const UNSAFE_REGEX = /(Remove-Item|Stop-Process|Restart-Computer|Invoke-WebRequest|Invoke-RestMethod|Set-ExecutionPolicy|Clear-Content|Format-Volume)/i;
 
@@ -30,11 +27,15 @@ function resolveSecurePath(filename, baseDir) {
 
 /**
  * Returns the working directory for the current context.
- * - "repo" mode → REPO_DIR (the bot's own source code)
- * - default    → PROJECT_DIR (the user's general workspace)
+ * Reads from process.env at call time (not module init) to ensure dotenv has loaded.
+ * - useRepoDir=true  → REPO_DIR (the bot's own source code)
+ * - useRepoDir=false → PROJECT_DIR (the user's general workspace)
  */
 function getWorkingDir(useRepoDir = false) {
-    return useRepoDir ? REPO_DIR : PROJECT_DIR;
+    if (useRepoDir) {
+        return process.env.REPO_DIR || process.cwd();
+    }
+    return process.env.PROJECT_DIR || process.cwd();
 }
 
 export async function executePowerShell(command, bypassSafety = false, useRepoDir = false) {

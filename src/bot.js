@@ -547,10 +547,96 @@ async function processAgentRequest({ channelID, userInput, systemMessage, author
 		}
 	}
 
+	if (!agentLoaded) {
+		const agentsDir = path.join(process.cwd(), "src", "agents");
+		let availableAgents = [];
+		if (fs.existsSync(agentsDir)) {
+			availableAgents = fs.readdirSync(agentsDir)
+				.filter(f => f.endsWith(".agent.md"))
+				.map(f => f.replace(".agent.md", ""));
+		}
+
+		if (availableAgents.length > 0) {
+			const rows = [];
+			let currentRow = new ActionRowBuilder();
+			availableAgents.forEach((agent, index) => {
+				if (index > 0 && index % 5 === 0) {
+					rows.push(currentRow);
+					currentRow = new ActionRowBuilder();
+				}
+				currentRow.addComponents(
+					new ButtonBuilder()
+						.setCustomId(`selectagent_${agent}`)
+						.setLabel(agent)
+						.setStyle(ButtonStyle.Secondary)
+				);
+			});
+			rows.push(currentRow);
+
+			const agentSelectMsg = await channel.send({
+				content: `🤖 **Which agent do you want to use for this?**`,
+				components: rows
+			});
+
+			log(LogLevel.Debug, `[Agent Selection] Waiting for user button click...`);
+			try {
+				const btnInteraction = await agentSelectMsg.awaitMessageComponent({
+					filter: i => i.user.id === authorId,
+					time: 60000 * 5
+				});
+
+				const selectedAgent = btnInteraction.customId.split('_')[1];
+				try {
+					await btnInteraction.update({
+						content: `✅ *You selected:* **${selectedAgent}**`,
+						components: []
+					});
+				} catch (updateErr) {
+					log(LogLevel.Error, `[Agent Selection] interaction.update() failed: ${updateErr.message}`);
+					try { await agentSelectMsg.edit({ content: `✅ *You selected:* **${selectedAgent}**`, components: [] }); } catch (_) {}
+				}
+
+				// Load the selected agent
+				const agentPath = path.join(agentsDir, `${selectedAgent}.agent.md`);
+				if (fs.existsSync(agentPath)) {
+					agentLoaded = true;
+					if (selectedAgent === "agent-factory") useRepoDir = true;
+					const agentContent = fs.readFileSync(agentPath, "utf-8");
+					finalSystemMessage += `\n\n--- AGENT CONTEXT: ${selectedAgent} ---\n${agentContent}`;
+					
+					// Load skills for the selected agent
+					const skillsDir = path.join(process.cwd(), "src", "skills");
+					const skillMatches = agentContent.match(/`([a-zA-Z0-9_-]+)`/g);
+					if (skillMatches) {
+						const uniqueSkills = [...new Set(skillMatches.map(s => s.replace(/`/g, "")))];
+						for (const skillName of uniqueSkills) {
+							const skillPath = path.join(skillsDir, skillName, "SKILL.md");
+							if (fs.existsSync(skillPath)) {
+								log(LogLevel.Debug, `Loading skill context: ${skillName}`);
+								const skillContent = fs.readFileSync(skillPath, "utf-8");
+								finalSystemMessage += `\n\n--- SKILL CONTEXT: ${skillName} ---\n${skillContent}`;
+							}
+						}
+					}
+				}
+			} catch (e) {
+				log(LogLevel.Debug, `[Agent Selection] awaitMessageComponent error: ${e.message || 'timeout'}`);
+				try {
+					await agentSelectMsg.edit({
+						content: `⏰ *(Timed out — no agent selected)*`,
+						components: []
+					});
+				} catch (_) {}
+				return "(No agent selected, operation cancelled)";
+			}
+		}
+	}
+
 	// Inject mandatory tool-use instruction when an agent is loaded
 	if (agentLoaded) {
 		// Inject working directory context so the agent knows where its tools operate
 		const workingDir = useRepoDir ? (process.env.REPO_DIR || process.cwd()) : (process.env.PROJECT_DIR || process.cwd());
+		log(LogLevel.Debug, `[Directory] useRepoDir=${useRepoDir} → Working directory: ${workingDir}`);
 		finalSystemMessage += `\n\n--- WORKING DIRECTORY ---
 Your tools (execute_powershell, read_file, write_file) operate in: ${workingDir}
 All file paths you use are relative to this directory.`;
