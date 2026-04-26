@@ -118,3 +118,232 @@ If you send a unique `order_id` as a dimension, Dynatrace has to create a new ti
 1.  **Never** use Timestamps, UUIDs, or Usernames as **Dimensions**.
 2.  **Always** use Categories (e.g., `Region`, `Environment`, `ServiceTier`) as **Dimensions**.
 3.  **Keep it Aggregated**: If you need to know which specific ID failed, put that ID in a **Log**, not a **Metric**.
+
+
+---
+Since you are using PowerShell, you have a lot of flexibility here. To build a **scalable, repeatable metric system**, you need to think like a database architect: keep the metric names generic and use **Dimensions** to provide the context.
+
+If you create a specific metric name for every new script, your dashboards will become a nightmare to maintain. Instead, use a "Generic Schema" approach.
+
+### 1. The Recommended Metric Schema
+Instead of hardcoding "staged" or "removed" into the metric name, use a generic `space_bytes` metric and differentiate the action with a `status` or `action` dimension.
+
+| Metric Name | Dimension 1 (Script) | Dimension 2 (Context) | Dimension 3 (Target) |
+| :--- | :--- | :--- | :--- |
+| `infracode.script.runtime` | `script_name` | `vcenter_name` | `status` (success/fail) |
+| `infracode.script.space_gb` | `script_name` | `vcenter_name` | `action` (staged/removed/total) |
+| `infracode.script.object_count`| `script_name` | `vcenter_name` | `classification` (content_lib/orphaned/etc) |
+
+---
+
+### 2. Mapping Your KPIs to the Schema
+
+Using this approach, here is how you would send your specific data points:
+
+#### Execution Frequency
+* **Metric:** `custom.infracode.script.runtime.count`
+* **Dimensions:** `script_name:odc`, `vcenter_name:vc01`, `status:success`
+* **Logic:** Send a `1` every time the script finishes.
+
+#### Space Management (Staged vs. Removed)
+Instead of two metrics, use one and split by a dimension. This allows you to create a single "Space Impact" chart where "Staged" and "Removed" are different colored bars.
+* **Metric:** `custom.infracode.script.space_gb`
+* **Dimensions:** `script_name:odc`, `vcenter_name:vc01`, **`type:staged`** OR **`type:removed`**
+* **Lifetime Logic:** To get "Total Lifetime," you don't need a separate metric. In Dynatrace, you simply change the dashboard visualization from "Rate" to **"Cumulative Sum"** or **"Total."**
+
+#### Classification & Skips
+* **Metric:** `custom.infracode.script.object_count`
+* **Dimensions:** `script_name:odc`, `vcenter_name:vc01`, **`category:skipped_content_lib`**, **`category:orphaned_deleted`**
+* **Logic:** This satisfies your requirement to see *why* things were handled a certain way.
+
+---
+
+### 3. Implementation Best Practice: The "Payload"
+Since you are using PowerShell, I recommend building a "Metric Helper" function. You don't want to care about the formatting every time. Your script logic should look like this:
+
+```powershell
+# Example: Sending the staged space
+$Dimensions = @{
+    script_name  = "odc"
+    vcenter_name = "vc-prod-01"
+    action       = "staged"
+}
+Send-DynatraceMetric -MetricName "infracode.script.space_gb" -Value 450 -Dimensions $Dimensions
+```
+
+---
+
+### 4. Addressing your "Lifetime" Struggle
+You mentioned wanting to track "Total Lifetime" space removed. 
+**Crucial Tip:** Do not try to calculate the "Lifetime Total" inside your PowerShell script and send that number. If the script fails to send once, your "Total" becomes inaccurate.
+
+**The Dynatrace Way:**
+1.  Send the **delta** (the amount removed *this run*).
+2.  In Dynatrace, use the **Data Explorer**.
+3.  Select your metric and use the transformation **`Cumulative Sum`**. 
+
+This makes your script "stateless." The script only knows what it did *right now*, and Dynatrace handles the historical math. This is much more robust because if you reran the script for a specific VC, it wouldn't double-count a hardcoded total.
+
+### 5. Managing Dimensions
+You mentioned `classifcication BY classification`. To keep this scalable, ensure your classification names are **clean strings** (no spaces, no special characters). 
+
+**Example Classifications:**
+* `active_disk`
+* `orphaned_staged`
+* `excluded_content_lib`
+* `excluded_manual_tag`
+
+Does the idea of using "Action/Type" dimensions instead of unique metric names make sense for your dashboarding goals, or do you prefer the visibility of separate metric names?
+
+
+To build this out properly, we will follow the "Generic Schema" approach. This ensures that when you write a *second* script (e.g., a "Snapshot Cleanup" script), you don't have to invent new metric names—you just change the `script_name` dimension.
+
+Here is a list of exactly what your PowerShell script should send to Dynatrace, formatted as **Metric Ingest Lines**.
+
+### 1. Execution Heartbeat (The "Run Count")
+This answers: *How many times did it run, where, and did it finish?*
+
+* **Metric Name:** `custom.infracode.script.runtime.count`
+* **Dimensions:** `script_name`, `vcenter_name`, `status`
+* **Examples:**
+    * `custom.infracode.script.runtime.count,script_name=odc,vcenter_name=vc-us-east,status=success 1`
+    * `custom.infracode.script.runtime.count,script_name=odc,vcenter_name=vc-eu-west,status=error 1`
+
+---
+
+### 2. Space Management (The "Volume" Metrics)
+Instead of separate metrics for "Staged" vs "Removed," we use the `action` dimension. This allows you to stack them in a single chart to show "Potential vs. Actual" savings.
+
+* **Metric Name:** `custom.infracode.script.space_gb`
+* **Dimensions:** `script_name`, `vcenter_name`, `action`
+* **Examples:**
+    * **Staged this run:** `custom.infracode.script.space_gb,script_name=odc,vcenter_name=vc-us-east,action=staged 450.5`
+    * **Removed this run:** `custom.infracode.script.space_gb,script_name=odc,vcenter_name=vc-us-east,action=removed 125.0`
+    * **Total Identified (Inventory):** `custom.infracode.script.space_gb,script_name=odc,vcenter_name=vc-us-east,action=total_orphaned 1200.0`
+
+> **Note on Lifetime:** To see "Total Lifetime Removed," you do not send a new metric. In the Dynatrace Data Explorer, you select the `action=removed` metric and change the **Aggregation** from `Value` to `Cumulative Sum`.
+
+---
+
+### 3. Classification & Logic (The "Why" Metrics)
+This answers: *What did the script find, and why did it skip certain things?* This uses a `classification` dimension to track the count of files/disks.
+
+* **Metric Name:** `custom.infracode.script.object_count`
+* **Dimensions:** `script_name`, `vcenter_name`, `classification`
+* **Examples:**
+    * **Skipped Content Libs:** `custom.infracode.script.object_count,script_name=odc,vcenter_name=vc-us-east,classification=skip_content_lib 24`
+    * **Skipped Templates:** `custom.infracode.script.object_count,script_name=odc,vcenter_name=vc-us-east,classification=skip_template 12`
+    * **Orphaned Disks Found:** `custom.infracode.script.object_count,script_name=odc,vcenter_name=vc-us-east,classification=orphaned_detected 8`
+    * **Success Deletions:** `custom.infracode.script.object_count,script_name=odc,vcenter_name=vc-us-east,classification=deleted_success 5`
+
+---
+
+### How to use these in a Dashboard
+By sending the data this way, you can build a powerful "Orphaned Disk Overview" dashboard with just three tiles:
+
+| Tile Type | Data Source | Visualization |
+| :--- | :--- | :--- |
+| **Health** | `runtime.count` | **Single Value:** Count of successful runs vs failures per VC. |
+| **Space Impact** | `space_gb` (filtered by `action`) | **Bar Chart:** Compare "Staged" vs "Removed" side-by-side. |
+| **The "Why"** | `object_count` | **Pie Chart:** Showing the ratio of "Deleted" vs "Skipped (Content Lib)" vs "Skipped (Template)". |
+| **Historical ROI** | `space_gb` (action=removed) | **Area Chart:** Use "Cumulative Sum" to show the line going up over months as you reclaim TBs of space. |
+
+---
+
+### Pro-Tip: The "Script Metadata" Event
+Since we are avoiding GUIDs in metrics, I highly recommend sending one **Custom Info Event** at the end of every script run. This is where you put the "high cardinality" data that you don't want in your metrics.
+
+**PowerShell Logic:**
+```powershell
+$EventPayload = @{
+    eventType = "CUSTOM_INFO"
+    title = "Orphaned Disk Cleanup Completed"
+    entitySelector = "type(vcenter),name($vcenterName)"
+    properties = @{
+        "script_run_id" = $GlobalGUID  # This is where the GUID goes!
+        "vc_name" = $vcenterName
+        "total_disks_processed" = $totalCount
+        "log_path" = "\\server\logs\odc_$GlobalGUID.log"
+    }
+}
+# Send this to the /api/v2/events endpoint
+```
+
+This way, if someone sees a "Failure" on your metric dashboard, they can look at the **Events** on that same timeframe to find the exact **GUID** and **Log Path** to go troubleshoot.
+
+Does this classification list cover all the "skips" and "actions" you were envisioning for your VMware logic?
+
+
+
+To build a truly scalable system for your department, you need to establish a **Unified Dimension Strategy**. This ensures that whether you are looking at a PowerShell script for VMware or a Go-based app like "SANMAN," the filtering experience in Dynatrace remains consistent.
+
+Here are 10 dimensions that will help you differentiate between scripts, apps, and systems within the **Infracode** department.
+
+---
+
+### 1. `app_name` / `project_name`
+This is your top-level filter. It groups multiple scripts or services under one logical umbrella.
+* **Why:** Even if you have 5 different scripts for SAN management, they all roll up to "SANMAN."
+* **Example:** `app_name=sanman`, `app_name=vm_lifecycle`
+
+### 2. `env_stage`
+Differentiates between where the script is running or what it is targeting.
+* **Why:** You don't want your "Lab" cleanup metrics skewing your "Production" capacity dashboards.
+* **Example:** `env_stage=prod`, `env_stage=lab`, `env_stage=staging`
+
+### 3. `execution_context` (The "Where")
+Identifies the platform or engine that triggered the script.
+* **Why:** Helps you determine if a failure is a script bug or an issue with the automation platform.
+* **Example:** `execution_context=github_actions`, `execution_context=ansible_tower`, `execution_context=windows_task_scheduler`
+
+### 4. `target_provider`
+Identifies the underlying technology being managed.
+* **Why:** Essential for a department that manages hybrid infra. It allows you to create one dashboard and filter by "AWS" vs "VMware."
+* **Example:** `target_provider=vmware`, `target_provider=aws`, `target_provider=pure_storage`
+
+### 5. `script_version` / `app_version`
+Tracks the version of the code sending the telemetry.
+* **Why:** If you push a code update that accidentally starts double-counting "orphaned disks," you can see exactly when the trend line shifted based on the version.
+* **Example:** `version=1.4.2-beta`, `version=2024.11.0`
+
+### 6. `site_region`
+The physical or logical location of the infrastructure being acted upon.
+* **Why:** You might want to see if "Orphaned Disks" are a bigger problem in your European datacenters versus US ones.
+* **Example:** `region=us-east-1`, `region=lon-dc-05`
+
+### 7. `trigger_source` (The "Who/How")
+Identifies if the run was a scheduled event or a manual intervention.
+* **Why:** Helps explain anomalies. A massive spike in "Space Removed" might be normal if the `trigger_source` was `manual_adhoc`.
+* **Example:** `trigger_source=scheduled`, `trigger_source=manual_user_jsmith`
+
+### 8. `team_owner`
+The specific sub-group within "Infracode" responsible for the tool.
+* **Why:** In a large department, this allows the "Storage Team" to have a dashboard that automatically excludes "Compute Team" metrics.
+* **Example:** `team_owner=storage_ops`, `team_owner=virtualization_eng`
+
+### 9. `target_criticality`
+The importance of the systems the script is touching.
+* **Why:** You might treat an error in a `criticality=tier_0` environment much differently than a `tier_3` sandbox.
+* **Example:** `criticality=p1_production`, `criticality=p4_sandbox`
+
+### 10. `host_origin`
+The specific machine/server where the script is actually executing.
+* **Why:** If your script runs fine on `Worker-Node-01` but fails on `Worker-Node-02`, this dimension reveals that the issue is likely a missing module or permission on that specific host.
+* **Example:** `host_origin=svc-powershell-01.corp.local`
+
+---
+
+### How this looks in practice (The "Side-by-Side")
+
+If you use these dimensions, your metric ingestion lines would look beautifully organized even for two completely different tools:
+
+**The ODC Script:**
+> `custom.infracode.script.object_count,app_name=odc,env_stage=prod,target_provider=vmware,region=us-east,classification=deleted_success 5`
+
+**The SANMAN App:**
+> `custom.infracode.script.object_count,app_name=sanman,env_stage=prod,target_provider=pure_storage,region=us-east,classification=lun_retired 2`
+
+### Pro-Tip for Scalability
+When you build your PowerShell "Metric Sender" function, make sure it automatically includes **App Name, Env, and Version** by default. That way, your teammates don't have to remember to add them every time—they just focus on the specific classification they care about.
+
+Do you have a specific naming convention for your "Apps" (like SANMAN) already, or are you looking to standardize those as well?
