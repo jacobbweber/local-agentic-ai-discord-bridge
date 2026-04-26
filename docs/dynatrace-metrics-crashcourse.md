@@ -347,3 +347,83 @@ If you use these dimensions, your metric ingestion lines would look beautifully 
 When you build your PowerShell "Metric Sender" function, make sure it automatically includes **App Name, Env, and Version** by default. That way, your teammates don't have to remember to add them every time—they just focus on the specific classification they care about.
 
 Do you have a specific naming convention for your "Apps" (like SANMAN) already, or are you looking to standardize those as well?
+
+
+
+---
+#####
+
+
+This is a smart approach. By standardizing the **Metric Path** and the **Dimension Keys**, your team of 6 can work independently on different scripts (Storage, Network, etc.) while ensuring all the data "plugs into" the same master dashboard automatically.
+
+Here is the **InfraCode Custom Metric Blueprint**. You can copy this into a shared document (Excel, Confluence, or a Git Readme) for the team to fill out.
+
+---
+
+## The InfraCode Metric Blueprint Template
+
+The goal is to follow this syntax: 
+`custom.infracode.[Domain].[Category].[Indicator]`
+
+| Functional Area (Domain) | Metric Category | Metric Indicator | Global Dimensions (Mandatory) | Contextual Dimensions (Specific to Script) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Example:** *Storage* | *Cleanup* | *space_gb* | `ic.app`, `ic.env`, `ic.region` | `action`, `vcenter_name`, `datastore_type` |
+| **Example:** *Compute* | *Lifecycle* | *vm_count* | `ic.app`, `ic.env`, `ic.region` | `status`, `template_name`, `os_type` |
+| **Example:** *Ops* | *Runtime* | *execution_time* | `ic.app`, `ic.env`, `ic.region` | `trigger`, `host_origin`, `exit_code` |
+
+---
+
+## 1. The Global "Standard" Dimensions
+Every single script sent by your team **must** include these five dimensions. This is what allows your "Team Dashboard" to function.
+
+| Dimension Key | Definition | Examples |
+| :--- | :--- | :--- |
+| `ic.app` | The unique name of the tool/script | `odc`, `sanman`, `dns-sync`, `v-provisioner` |
+| `ic.domain` | The IT pillar this serves | `storage`, `compute`, `network`, `ops` |
+| `ic.env` | The lifecycle of the target | `prod`, `stage`, `lab`, `sandbox` |
+| `ic.provider` | The technology being touched | `vmware`, `pure`, `aws`, `f5`, `active_directory` |
+| `ic.region` | The physical/logical location | `us-east`, `emea`, `site-01`, `global` |
+
+---
+
+## 2. Mapping Your Specific KPIs (The Table View)
+Use this map to define the "Contextual Dimensions" that help differentiate the logic within your specific scripts.
+
+### Metric Path: `custom.infracode.automation.*`
+
+| Metric Name | Dimension 1 (Logic) | Dimension 2 (Target) | Dimension 3 (Outcome) |
+| :--- | :--- | :--- | :--- |
+| **`.runtime.count`** | `status` (success / error) | `trigger` (scheduled / manual) | `host_origin` (server-01) |
+| **`.object.count`** | `classification` (orphaned / skip_lib / template) | `vcenter_name` | `action` (staged / deleted) |
+| **`.space.gb`** | `action` (staged / removed / total) | `vcenter_name` | `datastore_type` (ssd / hdd) |
+| **`.duration.sec`** | `step` (discovery / logic / cleanup) | `vcenter_name` | - |
+
+---
+
+## 3. How to differentiate "SANMAN" vs "ODC"
+When you look at your metrics in the Dynatrace Data Explorer, you won't need to look for "ODC metrics." You will look for `custom.infracode.automation.object.count` and then **filter by `ic.app`**.
+
+**Example 1: The ODC Script**
+* **Metric:** `custom.infracode.automation.object.count`
+* **Dimensions:** `ic.app=odc`, `ic.domain=storage`, `classification=skip_content_lib`, `vcenter_name=vc-prod-01`
+
+**Example 2: The SANMAN App**
+* **Metric:** `custom.infracode.automation.object.count`
+* **Dimensions:** `ic.app=sanman`, `ic.domain=storage`, `classification=lun_retired`, `array_name=pure-flash-05`
+
+### Why this works:
+1.  **Uniformity:** You can create one dashboard tile that shows "Total Objects Processed by InfraCode Team" by simply summing the `object.count` metric and grouping by `ic.app`.
+2.  **Scalability:** If a new team member joins and writes a "Network Port Cleanup" script, they just use `ic.app=port-cleaner`, `ic.domain=network`, and `classification=disabled_unused`. Your dashboard **automatically** picks up their data without you changing a single setting.
+
+---
+
+## 4. The "Rules of the Road" for the Team
+To ensure this works, your team of 6 should agree on these "Ground Rules":
+
+1.  **Lower-Case Only:** All metric names and dimension keys must be lowercase. (Dynatrace is case-sensitive; `ic.App` and `ic.app` are two different things).
+2.  **No Spaces:** Use underscores or dots.
+3.  **Units in Name:** Always include the unit in the metric name (e.g., `_gb`, `_count`, `_sec`).
+4.  **Send Deltas:** Never send a "Running Total." If ODC deletes 5 disks, send `5`. Dynatrace will handle the "Lifetime Total" calculation for you.
+5.  **Dimensions, not Metrics:** If you find yourself wanting to create a metric called `.staged_space_gb` and another called `.removed_space_gb`, **STOP**. Create one metric called `.space_gb` and use a dimension called `action=staged` or `action=removed`.
+
+**How does this table feel for the team? Does it cover the specific scenarios you have for the SANMAN app vs the ODC script?**
