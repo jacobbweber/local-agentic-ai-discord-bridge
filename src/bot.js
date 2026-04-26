@@ -806,6 +806,91 @@ If you have multiple missing details, ask about the MOST CRITICAL one first usin
 		} else {
 			responseText = responseMessage.content;
 			log(LogLevel.Debug, `[Agent Loop #${loopIteration}] Final text response received (${responseText?.length || 0} chars). Done.`);
+
+			// Check for automatic handoff
+			const agentMatches = responseText ? [...responseText.matchAll(/@([a-zA-Z0-9_-]+)/g)].map(m => m[1]) : [];
+			let nextAgent = null;
+			if (agentMatches.length > 0) {
+				const agentsDir = path.join(process.cwd(), "src", "agents");
+				if (fs.existsSync(agentsDir)) {
+					const availableAgents = fs.readdirSync(agentsDir)
+						.filter(f => f.endsWith(".agent.md"))
+						.map(f => f.replace(".agent.md", ""));
+					for (const match of agentMatches) {
+						if (availableAgents.includes(match) && !uniqueAgents.includes(match)) {
+							nextAgent = match;
+							break;
+						}
+					}
+				}
+			}
+
+			if (nextAgent) {
+				log(LogLevel.Info, `[Agent Handoff] Automatically handing off to: ${nextAgent}`);
+				
+				// Send the intermediate response text to the channel
+				try {
+					const chunks = splitText(responseText, 2000);
+					for (const chunk of chunks) {
+						await channel.send({ content: chunk });
+					}
+				} catch (e) { logError(e); }
+
+				const agentsDir = path.join(process.cwd(), "src", "agents");
+				const skillsDir = path.join(process.cwd(), "src", "skills");
+				const agentPath = path.join(agentsDir, `${nextAgent}.agent.md`);
+				
+				let newSystemContent = `\n\n--- AGENT HANDOFF: ${nextAgent} ---\nYou are now acting as the ${nextAgent} agent.`;
+				
+				if (fs.existsSync(agentPath)) {
+					if (nextAgent === "agent-factory") useRepoDir = true;
+					const agentContent = fs.readFileSync(agentPath, "utf-8");
+					newSystemContent += `\n\n--- AGENT CONTEXT: ${nextAgent} ---\n${agentContent}`;
+					
+					const skillMatches = agentContent.match(/`([a-zA-Z0-9_-]+)`/g);
+					if (skillMatches) {
+						const uniqueSkills = [...new Set(skillMatches.map(s => s.replace(/`/g, "")))];
+						for (const skillName of uniqueSkills) {
+							const skillPath = path.join(skillsDir, skillName, "SKILL.md");
+							if (fs.existsSync(skillPath)) {
+								log(LogLevel.Debug, `Loading skill context: ${skillName}`);
+								const skillContent = fs.readFileSync(skillPath, "utf-8");
+								newSystemContent += `\n\n--- SKILL CONTEXT: ${skillName} ---\n${skillContent}`;
+							}
+						}
+					}
+				}
+				
+				const workingDir = useRepoDir ? (process.env.REPO_DIR || process.cwd()) : (process.env.PROJECT_DIR || process.cwd());
+				newSystemContent += `\n\n--- WORKING DIRECTORY ---
+Your tools (execute_powershell, read_file, write_file) operate in: ${workingDir}
+All file paths you use are relative to this directory.`;
+				
+				newSystemContent += `\n\n--- CRITICAL INTERACTION RULES ---
+When you need ANY information from the user — missing details, architectural decisions, clarifications, or choices between options — you MUST call the "ask_user_clarification" tool. NEVER ask questions as plain text in your response.
+Call the tool with:
+- "question": your question text
+- "options": an array of 2-5 short clickable choices the user can pick from
+The user will click a button in Discord to respond. Only after receiving their selection should you proceed.
+If you have multiple missing details, ask about the MOST CRITICAL one first using a single tool call.`;
+				
+				const handoffMessage = { role: "system", content: newSystemContent };
+				const promptMessage = { role: "user", content: `Please continue the work as @${nextAgent} based on the previous response's handoff.` };
+				
+				messagesForOpenAI.push(handoffMessage, promptMessage);
+				messages[channelID].history.push(handoffMessage, promptMessage);
+
+				try {
+					await channel.send(`🔄 **Automatic Handoff:** Passing context to **@${nextAgent}**...`);
+				} catch (e) {}
+
+				uniqueAgents.push(nextAgent);
+				
+				// Reset response text and continue loop
+				responseText = "";
+				continue;
+			}
+
 			keepRunning = false;
 		}
 	}
